@@ -8,36 +8,53 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-class NCF(nn.Module):
+class WideAndDeep(nn.Module):
     def __init__(self, user_embedding, joke_embedding, dropout_rate=0.3):
-        super(NCF, self).__init__()
-        # self.user_embedding = nn.Embedding.from_pretrained(
-        #     torch.tensor(user_embedding, dtype=torch.float32), freeze=False
-        # )
+        super(WideAndDeep, self).__init__()
         self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
+        # self.user_embedding = nn.Embedding.from_pretrained(
+        #     torch.tensor(user_embedding, dtype=torch.float32), freeze=True
+        # )
         self.joke_embedding = nn.Embedding.from_pretrained(
             torch.tensor(joke_embedding, dtype=torch.float32), freeze=False
         )
         user_emb_dim = user_embedding.shape[1]
         joke_emb_dim = joke_embedding.shape[1]
-        self.fc1 = nn.Linear(user_emb_dim + joke_emb_dim, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 1)
-        self.relu = nn.ReLU()
+
+        # Deep part
+        self.deep_layer = nn.Sequential(
+            nn.Linear(user_emb_dim + joke_emb_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, 1),
+        )
+
+        # Wide part
+        self.wide = nn.Linear(user_emb_dim + joke_emb_dim, 1)
+
         self.output_scale = nn.Tanh()
 
     def forward(self, user, joke):
         user_embedded = self.user_embedding(user)
         joke_embedded = self.joke_embedding(joke)
         x = torch.cat([user_embedded, joke_embedded], dim=-1)
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.fc3(x)
-        x = self.output_scale(x) * 10  # Scale the output to be between -10 and 10
-        return x
+
+        # Wide part
+        wide_output = self.wide(x)
+
+        # Deep part
+        deep_output = self.deep_layer(x)
+
+        # Combine wide and deep parts
+        output = wide_output + deep_output
+        output = self.output_scale(output) * 10  # Scale the output to be between -10 and 10
+        return output
 
 
-def neuralCF_train(data, user_embedding, joke_embedding):
+def wide_and_deep_train(data, user_embedding, joke_embedding):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
@@ -48,11 +65,11 @@ def neuralCF_train(data, user_embedding, joke_embedding):
     X_test = test.drop("Rating", axis=1)
     y_test = test["Rating"]
 
-    model = NCF(user_embedding, joke_embedding).to(device)
+    model = WideAndDeep(user_embedding, joke_embedding).to(device)
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.1, patience=2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", patience=2, factor=0.1)
 
     train_dataset = TensorDataset(
         torch.tensor(X_train["user_id"].values, dtype=torch.long),
@@ -101,7 +118,7 @@ def neuralCF_train(data, user_embedding, joke_embedding):
 
         if avg_test_loss < best_loss:
             best_loss = avg_test_loss
-            torch.save(model.state_dict(), "./model/ncf.pth")
+            torch.save(model.state_dict(), "./model/wide_and_deep.pth")
             epoch_no_improve = 0
         else:
             epoch_no_improve += 1
@@ -109,15 +126,15 @@ def neuralCF_train(data, user_embedding, joke_embedding):
                 print("Early stopping")
                 break
 
-        # scheduler.step(avg_test_loss)
+        scheduler.step(avg_train_loss)
 
 
-def neuralCF_inference(data, user_embedding, joke_embedding):
+def wide_and_deep_inference(data, user_embedding, joke_embedding):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model = NCF(user_embedding, joke_embedding).to(device)
-    model.load_state_dict(torch.load("./model/ncf.pth"))
+    model = WideAndDeep(user_embedding, joke_embedding).to(device)
+    model.load_state_dict(torch.load("./model/wide_and_deep.pth"))
     model.eval()
 
     test_dataset = TensorDataset(
@@ -137,7 +154,7 @@ def neuralCF_inference(data, user_embedding, joke_embedding):
 
     data["Rating"] = predictions
     data.drop(["user_id", "joke_id"], axis=1, inplace=True)
-    data.to_csv("./data/submission_ncf.csv", index=False)
+    data.to_csv("./data/submission_wide_and_deep.csv", index=False)
     print("Inference completed.")
 
 
@@ -147,9 +164,9 @@ if __name__ == "__main__":
     train_data["user_id"] = train_data["user_id"] - 1
     assert train_data["user_id"].min() >= 0 and train_data["joke_id"].min() >= 0, "Negative IDs detected"
 
-    user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
+    # user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
     joke_embedding_matrix = np.load("./data/joke_rationale_embeddings.npy")
-    # user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), joke_embedding_matrix.shape[1]))
+    user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), 30))
 
     # for user_id in train_data["user_id"].unique():
     #     user_data = train_data[train_data["user_id"] == user_id]
@@ -159,11 +176,11 @@ if __name__ == "__main__":
     #     weighted_joke_embeddings = joke_embedding_matrix[joke_ids] * ratings[:, np.newaxis]
     #     user_embedding_matrix[user_id] = weighted_joke_embeddings.sum(axis=0)
 
-    neuralCF_train(train_data, user_embedding_matrix, joke_embedding_matrix)
+    wide_and_deep_train(train_data, user_embedding_matrix, joke_embedding_matrix)
 
     test_data = pd.read_csv("./data/test.csv")
     test_data["joke_id"] = test_data["joke_id"] - 1
     test_data["user_id"] = test_data["user_id"] - 1
     assert test_data["user_id"].min() >= 0 and test_data["joke_id"].min() >= 0, "Negative IDs detected"
 
-    neuralCF_inference(test_data, user_embedding_matrix, joke_embedding_matrix)
+    wide_and_deep_inference(test_data, user_embedding_matrix, joke_embedding_matrix)

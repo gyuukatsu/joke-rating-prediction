@@ -5,54 +5,63 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 
 
-class NCF(nn.Module):
+class ContrastiveTwoTowerModel(nn.Module):
     def __init__(self, user_embedding, joke_embedding, dropout_rate=0.3):
-        super(NCF, self).__init__()
+        super(ContrastiveTwoTowerModel, self).__init__()
+
         # self.user_embedding = nn.Embedding.from_pretrained(
         #     torch.tensor(user_embedding, dtype=torch.float32), freeze=False
         # )
         self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
         self.joke_embedding = nn.Embedding.from_pretrained(
-            torch.tensor(joke_embedding, dtype=torch.float32), freeze=False
+            torch.tensor(joke_embedding, dtype=torch.float32), freeze=True
         )
         user_emb_dim = user_embedding.shape[1]
         joke_emb_dim = joke_embedding.shape[1]
-        self.fc1 = nn.Linear(user_emb_dim + joke_emb_dim, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 1)
-        self.relu = nn.ReLU()
-        self.output_scale = nn.Tanh()
+        self.user_fc = nn.Sequential(
+            nn.Linear(user_emb_dim, 64), nn.ReLU(), nn.Dropout(dropout_rate), nn.Linear(64, 32)
+        )
+        self.joke_fc = nn.Sequential(
+            nn.Linear(joke_emb_dim, 64), nn.ReLU(), nn.Dropout(dropout_rate), nn.Linear(64, 32)
+        )
 
     def forward(self, user, joke):
         user_embedded = self.user_embedding(user)
         joke_embedded = self.joke_embedding(joke)
-        x = torch.cat([user_embedded, joke_embedded], dim=-1)
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.fc3(x)
-        x = self.output_scale(x) * 10  # Scale the output to be between -10 and 10
-        return x
+
+        user_features = self.user_fc(user_embedded)
+        joke_features = self.joke_fc(joke_embedded)
+
+        return user_features, joke_features
 
 
-def neuralCF_train(data, user_embedding, joke_embedding):
+def contrastive_loss(user_features, joke_features, rating, margin=1.0):
+    distances = (user_features - joke_features).pow(2).sum(1)  # Euclidean distance
+    losses = 0.5 * (rating * distances + (1 - rating) * F.relu(margin - distances.sqrt()).pow(2))
+    return losses.mean()
+
+
+def twoTower_train(data, user_embedding_matrix, joke_embedding_matrix):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Split the data into train and test
+    # Normalize ratings [-10, 10] -> [0, 1]
+    data["Rating"] = (data["Rating"] + 10) / 20
+
     train, test = train_test_split(data, test_size=0.2)
     X_train = train.drop("Rating", axis=1)
     y_train = train["Rating"]
     X_test = test.drop("Rating", axis=1)
     y_test = test["Rating"]
 
-    model = NCF(user_embedding, joke_embedding).to(device)
+    model = ContrastiveTwoTowerModel(user_embedding_matrix, joke_embedding_matrix, dropout_rate=0.3).to(device)
 
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.1, patience=2)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
 
     train_dataset = TensorDataset(
         torch.tensor(X_train["user_id"].values, dtype=torch.long),
@@ -70,16 +79,16 @@ def neuralCF_train(data, user_embedding, joke_embedding):
 
     num_epochs = 100
     early_stopping_patience = 3
-    best_loss = float("inf")
-    epoch_no_improve = 0
+    best_test_loss = float("inf")
+    epochs_no_improve = 0
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
         for user, joke, rating in train_loader:
             user, joke, rating = user.to(device), joke.to(device), rating.to(device)
             optimizer.zero_grad()
-            output = model(user, joke).squeeze()
-            loss = criterion(output, rating)
+            user_features, joke_features = model(user, joke)
+            loss = contrastive_loss(user_features, joke_features, rating)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
@@ -87,44 +96,48 @@ def neuralCF_train(data, user_embedding, joke_embedding):
         avg_train_loss = total_loss / len(train_loader)
         print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}")
 
+        # Evaluate on test set
         model.eval()
         with torch.no_grad():
             total_loss = 0
             for user, joke, rating in test_loader:
                 user, joke, rating = user.to(device), joke.to(device), rating.to(device)
-                output = model(user, joke).squeeze()
-                loss = criterion(output, rating)
+                user_features, joke_features = model(user, joke)
+                loss = contrastive_loss(user_features, joke_features, rating)
                 total_loss += loss.item()
 
         avg_test_loss = total_loss / len(test_loader)
         print(f"Epoch {epoch+1}/{num_epochs}, Test Loss: {avg_test_loss:.4f}")
 
-        if avg_test_loss < best_loss:
-            best_loss = avg_test_loss
-            torch.save(model.state_dict(), "./model/ncf.pth")
-            epoch_no_improve = 0
+        # Early stopping
+        if avg_test_loss < best_test_loss:
+            best_test_loss = avg_test_loss
+            torch.save(model.state_dict(), "./model/two_tower_contrastive.pth")
+            epochs_no_improve = 0
         else:
-            epoch_no_improve += 1
-            if epoch_no_improve == early_stopping_patience:
+            epochs_no_improve += 1
+            if epochs_no_improve == early_stopping_patience:
                 print("Early stopping")
                 break
 
-        # scheduler.step(avg_test_loss)
+        # Adjust learning rate
+        scheduler.step(avg_test_loss)
 
 
-def neuralCF_inference(data, user_embedding, joke_embedding):
+def twoTower_inference(data, user_embedding_matrix, joke_embedding_matrix):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model = NCF(user_embedding, joke_embedding).to(device)
-    model.load_state_dict(torch.load("./model/ncf.pth"))
+    # Load the trained model
+    model = ContrastiveTwoTowerModel(user_embedding_matrix, joke_embedding_matrix, dropout_rate=0).to(device)
+    model.load_state_dict(torch.load("./model/two_tower_contrastive.pth"))
     model.eval()
 
+    # Prepare test dataset
     test_dataset = TensorDataset(
         torch.tensor(data["user_id"].values, dtype=torch.long),
         torch.tensor(data["joke_id"].values, dtype=torch.long),
     )
-
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     predictions = []
@@ -132,20 +145,25 @@ def neuralCF_inference(data, user_embedding, joke_embedding):
     with torch.no_grad():
         for user, joke in test_loader:
             user, joke = user.to(device), joke.to(device)
-            output = model(user, joke).squeeze()
-            predictions.extend(output.cpu().detach().numpy())
+            user_features, joke_features = model(user, joke)
+            distances = (user_features - joke_features).pow(2).sum(1).sqrt()
+            predictions.extend(distances.cpu().numpy())
 
-    data["Rating"] = predictions
+    # Denormalize ratings: Restore the scale to [-10, 10]
+    def denormalize_rating(normalized_rating):
+        return normalized_rating * 20 - 10
+
+    data["Rating"] = denormalize_rating(np.array(predictions))
     data.drop(["user_id", "joke_id"], axis=1, inplace=True)
-    data.to_csv("./data/submission_ncf.csv", index=False)
-    print("Inference completed.")
+    data.to_csv("./data/submission_two_tower_contrastive.csv", index=False)
+    print("Inference complete. Predictions saved to './data/submission_two_tower_contrastive.csv'")
 
 
 if __name__ == "__main__":
+    # Load train data
     train_data = pd.read_csv("./data/train.csv")
-    train_data["joke_id"] = train_data["joke_id"] - 1
     train_data["user_id"] = train_data["user_id"] - 1
-    assert train_data["user_id"].min() >= 0 and train_data["joke_id"].min() >= 0, "Negative IDs detected"
+    train_data["joke_id"] = train_data["joke_id"] - 1
 
     user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
     joke_embedding_matrix = np.load("./data/joke_rationale_embeddings.npy")
@@ -159,11 +177,14 @@ if __name__ == "__main__":
     #     weighted_joke_embeddings = joke_embedding_matrix[joke_ids] * ratings[:, np.newaxis]
     #     user_embedding_matrix[user_id] = weighted_joke_embeddings.sum(axis=0)
 
-    neuralCF_train(train_data, user_embedding_matrix, joke_embedding_matrix)
+    twoTower_train(train_data, user_embedding_matrix, joke_embedding_matrix)
 
+    # Load test data
     test_data = pd.read_csv("./data/test.csv")
-    test_data["joke_id"] = test_data["joke_id"] - 1
     test_data["user_id"] = test_data["user_id"] - 1
+    test_data["joke_id"] = test_data["joke_id"] - 1
     assert test_data["user_id"].min() >= 0 and test_data["joke_id"].min() >= 0, "Negative IDs detected"
 
-    neuralCF_inference(test_data, user_embedding_matrix, joke_embedding_matrix)
+    twoTower_inference(test_data, user_embedding_matrix, joke_embedding_matrix)
+
+# tmux attach -t joke-rating-prediction

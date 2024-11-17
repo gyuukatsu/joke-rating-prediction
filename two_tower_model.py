@@ -102,6 +102,7 @@ def twoTower_train(data, user_embedding_matrix, joke_embedding_matrix):
                 output = model(user, joke).squeeze()
                 loss = criterion(output, rating)
                 total_loss += loss.item()
+
         avg_test_loss = total_loss / len(test_loader)
         print(f"Epoch {epoch+1}/{num_epochs}, Test Loss: {avg_test_loss:.4f}")
 
