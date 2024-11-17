@@ -57,7 +57,7 @@ def twoTower_train(data, user_embedding_matrix, joke_embedding_matrix):
     model = TwoTowerModel(user_embedding_matrix, joke_embedding_matrix, dropout_rate=0.3).to(device)
 
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.01, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=2)
 
     train_dataset = TensorDataset(
@@ -108,6 +108,7 @@ def twoTower_train(data, user_embedding_matrix, joke_embedding_matrix):
         # Early stopping
         if avg_test_loss < best_test_loss:
             best_test_loss = avg_test_loss
+            torch.save(model.state_dict(), "./model/two_tower_advanced.pth")
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
@@ -117,9 +118,6 @@ def twoTower_train(data, user_embedding_matrix, joke_embedding_matrix):
 
         # Adjust learning rate
         scheduler.step(avg_test_loss)
-
-    # Save the model
-    torch.save(model.state_dict(), "./model/two_tower_advanced.pth")
 
 
 def twoTower_inference(data, user_embedding_matrix, joke_embedding_matrix):
@@ -165,15 +163,16 @@ if __name__ == "__main__":
     train_data["joke_id"] = train_data["joke_id"] - 1
 
     # user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
-    joke_embedding_matrix = np.load("./data/joke_embeddings.npy")
+    joke_embedding_matrix = np.load("./data/joke_rationale_embeddings.npy")
     user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), joke_embedding_matrix.shape[1]))
 
     for user_id in train_data["user_id"].unique():
         user_data = train_data[train_data["user_id"] == user_id]
         joke_ids = user_data["joke_id"].values
         ratings = user_data["Rating"].values
+        ratings_normalized = ratings / np.linalg.norm(ratings)
         weighted_joke_embeddings = joke_embedding_matrix[joke_ids] * ratings[:, np.newaxis]
-        user_embedding_matrix[user_id] = weighted_joke_embeddings.mean(axis=0)
+        user_embedding_matrix[user_id] = weighted_joke_embeddings.sum(axis=0)
 
     twoTower_train(train_data, user_embedding_matrix, joke_embedding_matrix)
 

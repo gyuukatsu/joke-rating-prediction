@@ -32,14 +32,9 @@ class NCF(nn.Module):
         return x
 
 
-def neuralCF_train():
+def neuralCF_train(data, joke_embedding):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
-    data = pd.read_csv("./data/train.csv")
-    data["joke_id"] = data["joke_id"] - 1
-    data["user_id"] = data["user_id"] - 1
-    assert data["user_id"].min() >= 0 and data["joke_id"].min() >= 0, "Negative IDs detected"
 
     # Split the data into train and test
     train, test = train_test_split(data, test_size=0.2)
@@ -47,8 +42,6 @@ def neuralCF_train():
     y_train = train["Rating"]
     X_test = test.drop("Rating", axis=1)
     y_test = test["Rating"]
-
-    joke_embedding = np.load("./data/joke_embeddings.npy")
 
     num_users = data["user_id"].nunique()
     num_jokes = data["joke_id"].nunique()
@@ -66,7 +59,17 @@ def neuralCF_train():
     )
     train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 
-    num_epochs = 10
+    test_dataset = TensorDataset(
+        torch.tensor(X_test["user_id"].values, dtype=torch.long),
+        torch.tensor(X_test["joke_id"].values, dtype=torch.long),
+        torch.tensor(y_test.values, dtype=torch.float32),
+    )
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+
+    num_epochs = 100
+    early_stopping_patience = 3
+    best_loss = float("inf")
+    epoch_no_improve = 0
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
@@ -79,41 +82,38 @@ def neuralCF_train():
             optimizer.step()
             total_loss += loss.item()
 
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader)}")
+        avg_train_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {avg_train_loss:.4f}")
 
-    model.eval()
-    test_dataset = TensorDataset(
-        torch.tensor(X_test["user_id"].values, dtype=torch.long),
-        torch.tensor(X_test["joke_id"].values, dtype=torch.long),
-        torch.tensor(y_test.values, dtype=torch.float32),
-    )
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+        model.eval()
+        with torch.no_grad():
+            total_loss = 0
+            for user, joke, rating in test_loader:
+                user, joke, rating = user.to(device), joke.to(device), rating.to(device)
+                output = model(user, joke).squeeze()
+                loss = criterion(output, rating)
+                total_loss += loss.item()
 
-    total_loss = 0
-    for user, joke, rating in test_loader:
-        user, joke, rating = user.to(device), joke.to(device), rating.to(device)
-        output = model(user, joke).squeeze()
-        loss = criterion(output, rating)
-        total_loss += loss.item()
-    print(f"Test Loss: {total_loss/len(test_loader)}")
+        avg_test_loss = total_loss / len(test_loader)
+        print(f"Epoch {epoch+1}/{num_epochs}, Test Loss: {avg_test_loss:.4f}")
 
-    # Save the model
-    torch.save(model.state_dict(), "./model/ncf.pth")
+        if avg_test_loss < best_loss:
+            best_loss = avg_test_loss
+            torch.save(model.state_dict(), "./model/ncf.pth")
+            epoch_no_improve = 0
+        else:
+            epoch_no_improve += 1
+            if epoch_no_improve == early_stopping_patience:
+                print("Early stopping")
+                break
 
 
-def neuralCF_inference():
+def neuralCF_inference(data, joke_embedding):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    real_test = pd.read_csv("./data/test.csv")
-    real_test["joke_id"] = real_test["joke_id"] - 1
-    real_test["user_id"] = real_test["user_id"] - 1
-    assert real_test["user_id"].min() >= 0 and real_test["joke_id"].min() >= 0, "Negative IDs detected"
-
-    joke_embedding = np.load("./data/joke_embeddings.npy")
-
-    num_users = real_test["user_id"].nunique()
-    num_jokes = real_test["joke_id"].nunique()
+    num_users = data["user_id"].nunique()
+    num_jokes = data["joke_id"].nunique()
     embedding_dim = joke_embedding.shape[1]
 
     model = NCF(num_users, num_jokes, embedding_dim, joke_embedding).to(device)
@@ -121,26 +121,38 @@ def neuralCF_inference():
     model.eval()
 
     test_dataset = TensorDataset(
-        torch.tensor(real_test["user_id"].values, dtype=torch.long),
-        torch.tensor(real_test["joke_id"].values, dtype=torch.long),
+        torch.tensor(data["user_id"].values, dtype=torch.long),
+        torch.tensor(data["joke_id"].values, dtype=torch.long),
     )
 
     test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
     predictions = []
 
-    for user, joke in test_loader:
-        user, joke = user.to(device), joke.to(device)
-        output = model(user, joke).squeeze()
-        predictions.extend(output.cpu().detach().numpy())
+    with torch.no_grad():
+        for user, joke in test_loader:
+            user, joke = user.to(device), joke.to(device)
+            output = model(user, joke).squeeze()
+            predictions.extend(output.cpu().detach().numpy())
 
-    real_test["Rating"] = predictions
-    real_test.drop(["user_id", "joke_id"], axis=1, inplace=True)
-    real_test.to_csv("./data/submission_ncf.csv", index=False)
+    data["Rating"] = predictions
+    data.drop(["user_id", "joke_id"], axis=1, inplace=True)
+    data.to_csv("./data/submission_ncf.csv", index=False)
+    print("Inference completed.")
 
 
 if __name__ == "__main__":
-    neuralCF_train()
-    neuralCF_inference()
+    train_data = pd.read_csv("./data/train.csv")
+    train_data["joke_id"] = train_data["joke_id"] - 1
+    train_data["user_id"] = train_data["user_id"] - 1
+    assert train_data["user_id"].min() >= 0 and train_data["joke_id"].min() >= 0, "Negative IDs detected"
 
-    # tmux attach -t wideDeepRec
+    test_data = pd.read_csv("./data/test.csv")
+    test_data["joke_id"] = test_data["joke_id"] - 1
+    test_data["user_id"] = test_data["user_id"] - 1
+    assert test_data["user_id"].min() >= 0 and test_data["joke_id"].min() >= 0, "Negative IDs detected"
+
+    joke_embedding = np.load("./data/joke_rationale_embeddings.npy")
+
+    neuralCF_train(train_data, joke_embedding)
+    neuralCF_inference(test_data, joke_embedding)
