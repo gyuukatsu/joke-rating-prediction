@@ -11,10 +11,10 @@ import torch.optim as optim
 class NCF(nn.Module):
     def __init__(self, user_embedding, joke_embedding, dropout_rate=0.3):
         super(NCF, self).__init__()
-        # self.user_embedding = nn.Embedding.from_pretrained(
-        #     torch.tensor(user_embedding, dtype=torch.float32), freeze=False
-        # )
-        self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
+        self.user_embedding = nn.Embedding.from_pretrained(
+            torch.tensor(user_embedding, dtype=torch.float32), freeze=False
+        )
+        # self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
         self.joke_embedding = nn.Embedding.from_pretrained(
             torch.tensor(joke_embedding, dtype=torch.float32), freeze=False
         )
@@ -24,7 +24,7 @@ class NCF(nn.Module):
         self.fc2 = nn.Linear(128, 64)
         self.fc3 = nn.Linear(64, 1)
         self.relu = nn.ReLU()
-        self.output_scale = nn.Tanh()
+        # self.output_scale = nn.Tanh()
 
     def forward(self, user, joke):
         user_embedded = self.user_embedding(user)
@@ -33,7 +33,7 @@ class NCF(nn.Module):
         x = self.relu(self.fc1(x))
         x = self.relu(self.fc2(x))
         x = self.fc3(x)
-        x = self.output_scale(x) * 10  # Scale the output to be between -10 and 10
+        # x = self.output_scale(x) * 10  # Scale the output to be between -10 and 10
         return x
 
 
@@ -42,7 +42,7 @@ def neuralCF_train(data, user_embedding, joke_embedding):
     print(f"Using device: {device}")
 
     # Split the data into train and test
-    train, test = train_test_split(data, test_size=0.2)
+    train, test = train_test_split(data, test_size=0.3)
     X_train = train.drop("Rating", axis=1)
     y_train = train["Rating"]
     X_test = test.drop("Rating", axis=1)
@@ -93,11 +93,11 @@ def neuralCF_train(data, user_embedding, joke_embedding):
             for user, joke, rating in test_loader:
                 user, joke, rating = user.to(device), joke.to(device), rating.to(device)
                 output = model(user, joke).squeeze()
-                loss = criterion(output, rating)
+                loss = torch.sqrt(criterion(output, rating))  # RMSE
                 total_loss += loss.item()
 
         avg_test_loss = total_loss / len(test_loader)
-        print(f"Epoch {epoch+1}/{num_epochs}, Test Loss: {avg_test_loss:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs}, Test RMSE: {avg_test_loss:.4f}")
 
         if avg_test_loss < best_loss:
             best_loss = avg_test_loss
@@ -147,9 +147,10 @@ if __name__ == "__main__":
     train_data["user_id"] = train_data["user_id"] - 1
     assert train_data["user_id"].min() >= 0 and train_data["joke_id"].min() >= 0, "Negative IDs detected"
 
-    user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
-    joke_embedding_matrix = np.load("./data/joke_rationale_embeddings.npy")
-    # user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), joke_embedding_matrix.shape[1]))
+    # user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
+    # joke_embedding_matrix = np.load("./data/item_latent_vectors_svd.npy")
+    joke_embedding_matrix = np.load("./data/rationale_embeddings.npy")
+    user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), joke_embedding_matrix.shape[1]))
 
     # for user_id in train_data["user_id"].unique():
     #     user_data = train_data[train_data["user_id"] == user_id]

@@ -1,26 +1,38 @@
 import pandas as pd
-from sklearn.decomposition import TruncatedSVD, NMF
 import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.linalg import svds
 
 # Load the joke rating data
 data = pd.read_csv("./data/train.csv")
 
-# Assuming the data has columns 'user_id', 'joke_id', and 'rating'
-user_joke_matrix = data.pivot(index="user_id", columns="joke_id", values="Rating").fillna(0)
+# Create a user-item rating matrix
+rating_matrix = data.pivot(index="user_id", columns="joke_id", values="Rating").fillna(0)
 
-# Choose the number of latent factors
-n_latent_factors = 100
+# Ensure the matrix is numeric
+rating_matrix = rating_matrix.astype(float)
 
-# Using SVD for matrix factorization
-svd = TruncatedSVD(n_components=n_latent_factors)
-user_latent_vectors_svd = svd.fit_transform(user_joke_matrix)
+# Convert to a sparse matrix
+rating_matrix_sparse = csr_matrix(rating_matrix.values)
 
-# Using NMF for matrix factorization
-# nmf = NMF(n_components=n_latent_factors, init="random", random_state=0)
-# user_latent_vectors_nmf = nmf.fit_transform(user_joke_matrix)
+# Perform SVD
+# Set k to the number of latent factors you want to extract
+k = 120
+U, sigma, VT = svds(rating_matrix_sparse, k=k)
 
-# Save the latent user vectors
-np.save("./data/user_latent_vectors_svd.npy", user_latent_vectors_svd)
-# np.save("./data/user_latent_vectors_nmf.npy", user_latent_vectors_nmf)
+# Convert sigma to a diagonal matrix
+sigma_diag = np.diag(sigma)
 
-print("Latent user vectors have been generated and saved.")
+# Calculate user and item latent vectors
+user_latent_vectors = np.dot(U, sigma_diag)  # Shape: (num_users, k)
+item_latent_vectors = VT.T  # Shape: (num_items, k)
+
+# Print the results
+print("User latent vectors:")
+print(user_latent_vectors)
+
+print("\nItem latent vectors:")
+print(item_latent_vectors)
+
+np.save("./data/user_latent_vectors_svd.npy", user_latent_vectors)
+np.save("./data/item_latent_vectors_svd.npy", item_latent_vectors)

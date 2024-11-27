@@ -1,46 +1,48 @@
 import json
-import torch
 from tqdm import tqdm
 import pandas as pd
-from transformers import pipeline
+import requests
 
-jokes = pd.read_csv(open("./data/jokes.csv"))
+url = "http://localhost:11434/api/chat"
 
-token = "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"
-model_id = "meta-llama/Llama-3.2-1B-Instruct"
-pipe = pipeline(
-    "text-generation",
-    model=model_id,
-    torch_dtype=torch.bfloat16,
-    device_map="cuda",
-    token=token,
-)
 
-rationales = []
+def llama3(model, messages):
+    data = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+    }
 
-for joke in tqdm(jokes["joke_text"]):
-    messages = [
-        {
-            "role": "system",
-            "content": "\n".join(
-                [
-                    "You are an evaluator for jokes.",
-                    "You need to provide a rationale for why the joke is funny.",
-                    "Your explanation should be less than 3 sentences.",
-                ]
-            ),
-        },
-        {
-            "role": "user",
-            "content": "Explain why this joke is funny. ```" + joke + "```",
-        },
-    ]
-    outputs = pipe(
-        messages,
-        max_new_tokens=1024,
-    )
+    headers = {"Content-Type": "application/json"}
+    response = requests.post(url, headers=headers, json=data)
+    print(response.json())
 
-    rationale = outputs[0]["generated_text"][-1]["content"]
-    rationales.append(rationale)
+    return response.json()["message"]["content"]
 
-json.dump({"rationales": rationales}, open("./data/rationales.json", "w"))
+
+if __name__ == "__main__":
+    jokes = pd.read_csv(open("./data/jokes.csv"))
+    rationales = []
+    model = "llama3.1:8b"
+
+    for joke in tqdm(jokes["joke_text"]):
+        messages = [
+            {
+                "role": "system",
+                "content": "\n".join(
+                    [
+                        "You are an evaluator for jokes.",
+                        "You need to provide a rationale for why the joke is funny.",
+                        "Your explanation should be less than 3 sentences.",
+                    ]
+                ),
+            },
+            {
+                "role": "user",
+                "content": "Explain why this joke is funny. ```" + joke + "```",
+            },
+        ]
+        rationale = llama3(model, messages)
+        rationales.append(rationale)
+
+    json.dump({"rationales": rationales}, open("./data/rationales.json", "w"))
