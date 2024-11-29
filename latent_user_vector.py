@@ -17,7 +17,7 @@ rating_matrix_sparse = csr_matrix(rating_matrix.values)
 
 # Perform SVD
 # Set k to the number of latent factors you want to extract
-k = 120
+k = 64
 U, sigma, VT = svds(rating_matrix_sparse, k=k)
 
 # Convert sigma to a diagonal matrix

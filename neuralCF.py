@@ -11,12 +11,12 @@ import torch.optim as optim
 class NCF(nn.Module):
     def __init__(self, user_embedding, joke_embedding, dropout_rate=0.3):
         super(NCF, self).__init__()
-        # self.user_embedding = nn.Embedding.from_pretrained(
-        #     torch.tensor(user_embedding, dtype=torch.float32), freeze=False
-        # )
-        self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
+        self.user_embedding = nn.Embedding.from_pretrained(
+            torch.tensor(user_embedding, dtype=torch.float32), freeze=True
+        )
+        # self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
         self.joke_embedding = nn.Embedding.from_pretrained(
-            torch.tensor(joke_embedding, dtype=torch.float32), freeze=False
+            torch.tensor(joke_embedding, dtype=torch.float32), freeze=True
         )
         user_emb_dim = user_embedding.shape[1]
         joke_emb_dim = joke_embedding.shape[1]
@@ -62,14 +62,14 @@ def neuralCF_train(data, user_embedding, joke_embedding):
         torch.tensor(X_train["joke_id"].values, dtype=torch.long),
         torch.tensor(y_train.values, dtype=torch.float32),
     )
-    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=1024, shuffle=True)
 
     test_dataset = TensorDataset(
         torch.tensor(X_test["user_id"].values, dtype=torch.long),
         torch.tensor(X_test["joke_id"].values, dtype=torch.long),
         torch.tensor(y_test.values, dtype=torch.float32),
     )
-    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=1024, shuffle=False)
 
     num_epochs = 100
     early_stopping_patience = 3
@@ -128,7 +128,7 @@ def neuralCF_inference(data, user_embedding, joke_embedding):
         torch.tensor(data["joke_id"].values, dtype=torch.long),
     )
 
-    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=1024, shuffle=False)
 
     predictions = []
 
@@ -146,16 +146,15 @@ def neuralCF_inference(data, user_embedding, joke_embedding):
 
 
 if __name__ == "__main__":
-    # train_data = pd.read_csv("./data/train.csv")
-    train_data = pd.read_csv("./data/augmented_train.csv")
+    train_data = pd.read_csv("./data/train.csv")
     train_data["joke_id"] = train_data["joke_id"] - 1
     train_data["user_id"] = train_data["user_id"] - 1
     assert train_data["user_id"].min() >= 0 and train_data["joke_id"].min() >= 0, "Negative IDs detected"
 
-    # user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
-    # joke_embedding_matrix = np.load("./data/item_latent_vectors_svd.npy")
-    joke_embedding_matrix = np.load("./data/augmented_joke_embeddings.npy")
-    user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), joke_embedding_matrix.shape[1]))
+    user_embedding_matrix = np.load("./data/trained_user_embeddings.npy")
+    joke_embedding_matrix = np.load("./data/trained_joke_embeddings.npy")
+    # joke_embedding_matrix = np.load("./data/rationale_embeddings.npy")
+    # user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), 32))
 
     # for user_id in train_data["user_id"].unique():
     #     user_data = train_data[train_data["user_id"] == user_id]
