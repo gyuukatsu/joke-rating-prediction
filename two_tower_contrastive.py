@@ -14,11 +14,11 @@ class ContrastiveTwoTowerModel(nn.Module):
         super(ContrastiveTwoTowerModel, self).__init__()
 
         self.user_embedding = nn.Embedding.from_pretrained(
-            torch.tensor(user_embedding, dtype=torch.float32), freeze=True
+            torch.tensor(user_embedding, dtype=torch.float32), freeze=False
         )
         # self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
         self.joke_embedding = nn.Embedding.from_pretrained(
-            torch.tensor(joke_embedding, dtype=torch.float32), freeze=True
+            torch.tensor(joke_embedding, dtype=torch.float32), freeze=False
         )
         user_emb_dim = user_embedding.shape[1]
         joke_emb_dim = joke_embedding.shape[1]
@@ -54,10 +54,10 @@ class ContrastiveTwoTowerModel(nn.Module):
         return user_features, joke_features, rating_prediction
 
 
-def hybrid_loss(user_features, joke_features, predicted_rating, actual_rating, margin=1.0):
+def hybrid_loss(user_features, joke_features, predicted_rating, actual_rating, alpha=0.5):
     # Contrastive loss (optional: normalize embeddings for cosine similarity)
-    user_features = F.normalize(user_features, dim=1)
-    joke_features = F.normalize(joke_features, dim=1)
+    user_features = F.normalize(user_features, dim=1, eps=1e-12)
+    joke_features = F.normalize(joke_features, dim=1, eps=1e-12)
     similarity = torch.cosine_similarity(user_features, joke_features, dim=1)
 
     contrastive = F.mse_loss(similarity, actual_rating / 10)  # Scale ratings to [-1, 1]
@@ -66,7 +66,7 @@ def hybrid_loss(user_features, joke_features, predicted_rating, actual_rating, m
     regression = F.mse_loss(predicted_rating.squeeze(), actual_rating)
 
     # Combine the losses
-    return 0.5 * contrastive + 0.5 * regression
+    return alpha * contrastive + (1 - alpha) * regression
 
 
 def twoTower_train(data, user_embedding_matrix, joke_embedding_matrix):
@@ -168,6 +168,7 @@ def twoTower_inference(data, user_embedding_matrix, joke_embedding_matrix):
         for user, joke in test_loader:
             user, joke = user.to(device), joke.to(device)
             _, _, predicted_rating = model(user, joke)
+            predicted_rating = torch.clamp(predicted_rating, -10, 10)
             predictions.extend(predicted_rating.squeeze().cpu().numpy())
 
     data["Rating"] = predictions
