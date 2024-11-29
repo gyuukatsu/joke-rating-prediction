@@ -11,28 +11,31 @@ import torch.optim as optim
 class NCF(nn.Module):
     def __init__(self, user_embedding, joke_embedding, dropout_rate=0.3):
         super(NCF, self).__init__()
-        self.user_embedding = nn.Embedding.from_pretrained(
-            torch.tensor(user_embedding, dtype=torch.float32), freeze=False
-        )
-        # self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
+        # self.user_embedding = nn.Embedding.from_pretrained(
+        #     torch.tensor(user_embedding, dtype=torch.float32), freeze=False
+        # )
+        self.user_embedding = nn.Embedding(user_embedding.shape[0], user_embedding.shape[1])
         self.joke_embedding = nn.Embedding.from_pretrained(
             torch.tensor(joke_embedding, dtype=torch.float32), freeze=False
         )
         user_emb_dim = user_embedding.shape[1]
         joke_emb_dim = joke_embedding.shape[1]
-        self.fc1 = nn.Linear(user_emb_dim + joke_emb_dim, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 1)
-        self.relu = nn.ReLU()
+        self.ncf_layers = nn.Sequential(
+            nn.Linear(user_emb_dim + joke_emb_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(128, 1),
+        )
         # self.output_scale = nn.Tanh()
 
     def forward(self, user, joke):
         user_embedded = self.user_embedding(user)
         joke_embedded = self.joke_embedding(joke)
         x = torch.cat([user_embedded, joke_embedded], dim=-1)
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        x = self.fc3(x)
+        x = self.ncf_layers(x)
         # x = self.output_scale(x) * 10  # Scale the output to be between -10 and 10
         return x
 
@@ -42,7 +45,7 @@ def neuralCF_train(data, user_embedding, joke_embedding):
     print(f"Using device: {device}")
 
     # Split the data into train and test
-    train, test = train_test_split(data, test_size=0.3)
+    train, test = train_test_split(data, test_size=0.1, shuffle=True, random_state=42)
     X_train = train.drop("Rating", axis=1)
     y_train = train["Rating"]
     X_test = test.drop("Rating", axis=1)
@@ -59,14 +62,14 @@ def neuralCF_train(data, user_embedding, joke_embedding):
         torch.tensor(X_train["joke_id"].values, dtype=torch.long),
         torch.tensor(y_train.values, dtype=torch.float32),
     )
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=256, shuffle=True)
 
     test_dataset = TensorDataset(
         torch.tensor(X_test["user_id"].values, dtype=torch.long),
         torch.tensor(X_test["joke_id"].values, dtype=torch.long),
         torch.tensor(y_test.values, dtype=torch.float32),
     )
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
     num_epochs = 100
     early_stopping_patience = 3
@@ -125,7 +128,7 @@ def neuralCF_inference(data, user_embedding, joke_embedding):
         torch.tensor(data["joke_id"].values, dtype=torch.long),
     )
 
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
 
     predictions = []
 
@@ -133,6 +136,7 @@ def neuralCF_inference(data, user_embedding, joke_embedding):
         for user, joke in test_loader:
             user, joke = user.to(device), joke.to(device)
             output = model(user, joke).squeeze()
+            output = torch.clamp(output, min=-10, max=10)
             predictions.extend(output.cpu().detach().numpy())
 
     data["Rating"] = predictions
@@ -142,14 +146,15 @@ def neuralCF_inference(data, user_embedding, joke_embedding):
 
 
 if __name__ == "__main__":
-    train_data = pd.read_csv("./data/train.csv")
+    # train_data = pd.read_csv("./data/train.csv")
+    train_data = pd.read_csv("./data/augmented_train.csv")
     train_data["joke_id"] = train_data["joke_id"] - 1
     train_data["user_id"] = train_data["user_id"] - 1
     assert train_data["user_id"].min() >= 0 and train_data["joke_id"].min() >= 0, "Negative IDs detected"
 
     # user_embedding_matrix = np.load("./data/user_latent_vectors_svd.npy")
     # joke_embedding_matrix = np.load("./data/item_latent_vectors_svd.npy")
-    joke_embedding_matrix = np.load("./data/rationale_embeddings.npy")
+    joke_embedding_matrix = np.load("./data/augmented_joke_embeddings.npy")
     user_embedding_matrix = np.zeros((train_data["user_id"].nunique(), joke_embedding_matrix.shape[1]))
 
     # for user_id in train_data["user_id"].unique():
